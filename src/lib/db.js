@@ -88,6 +88,12 @@ const CATEGORIAS_BASE = [
   { category_id: "organico", label: "Orgánico", color_key: "lichen", destino: "Compostaje comunitario" },
 ];
 
+export async function updateJornadaDatosRemote(jornadaId, { title, date, hora, lugar }) {
+  if (!supabaseEnabled) return;
+  const { error } = await supabase.from("jornadas").update({ title, date, hora, lugar }).eq("id", jornadaId);
+  if (error) throw error;
+}
+
 export async function iniciarJornadaRemote(jornadaId) {
   if (!supabaseEnabled) return;
   await supabase.from("jornadas").update({ status_key: "en_proceso" }).eq("id", jornadaId);
