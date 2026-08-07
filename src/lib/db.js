@@ -65,6 +65,11 @@ export async function updateKgRemote(jornadaId, kgTotal) {
   await supabase.from("jornadas").update({ kg_total: kgTotal }).eq("id", jornadaId);
 }
 
+export async function updateParticipantesRemote(jornadaId, participantes) {
+  if (!supabaseEnabled) return;
+  await supabase.from("jornadas").update({ participantes }).eq("id", jornadaId);
+}
+
 export async function finalizarJornadaRemote(jornadaId) {
   if (!supabaseEnabled) return;
   await supabase.from("jornadas").update({ status_key: "completada" }).eq("id", jornadaId);
@@ -90,4 +95,47 @@ export async function classifyPhoto(base64Image) {
   });
   if (!res.ok) throw new Error("classify_failed");
   return res.json(); // { category: 'plastico' | 'vertimiento' | 'organico' | 'otro', confidence: 0-1 }
+}
+
+// --- Acceso de organizador (solo ustedes, no los ciudadanos) ---
+
+export async function signIn(email, password) {
+  if (!supabaseEnabled) return { error: "supabase_disabled" };
+  const { error } = await supabase.auth.signInWithPassword({ email, password });
+  return { error };
+}
+
+export async function signOut() {
+  if (!supabaseEnabled) return;
+  await supabase.auth.signOut();
+}
+
+export async function getSession() {
+  if (!supabaseEnabled) return null;
+  const { data } = await supabase.auth.getSession();
+  return data.session;
+}
+
+export function subscribeAuth(callback) {
+  if (!supabaseEnabled) return () => {};
+  const { data } = supabase.auth.onAuthStateChange((_event, session) => callback(session));
+  return () => data.subscription.unsubscribe();
+}
+
+export async function createJornada(title, date) {
+  if (!supabaseEnabled) return null;
+  const { data: jornada, error } = await supabase
+    .from("jornadas")
+    .insert({ title, date, status_key: "proxima", participantes: 0, kg_total: 0 })
+    .select()
+    .single();
+  if (error) throw error;
+
+  const categorias = [
+    { category_id: "plastico", label: "Plástico", color_key: "ochre", destino: "Planta de reciclaje aliada" },
+    { category_id: "vertimiento", label: "Vertimiento", color_key: "water", destino: "Evidencia entregada a la CAR" },
+    { category_id: "organico", label: "Orgánico", color_key: "lichen", destino: "Compostaje comunitario" },
+  ];
+  await supabase.from("jornada_desglose").insert(categorias.map((cat) => ({ jornada_id: jornada.id, bolsas: 0, ...cat })));
+  return jornada;
 }
