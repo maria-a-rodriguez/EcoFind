@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useMemo, useEffect, useCallback } from "react";
 import {
   Home,
   Camera,
@@ -6,45 +6,41 @@ import {
   ClipboardList,
   Droplets,
   Trash2,
-  Trash,
-  Pencil,
   Leaf,
   AlertTriangle,
   Check,
   ChevronDown,
   Users,
   Calendar,
-  Clock,
   Sun,
   Moon,
   Sparkles,
   Recycle,
   MessageSquareText,
-  CloudOff,
-  UploadCloud,
+  AlertCircle,
+  Construction,
+  Clock,
 } from "lucide-react";
 import RealMap from "./components/RealMap.jsx";
 import { supabaseEnabled } from "./lib/supabaseClient.js";
 import {
   fetchReports,
   insertReport,
-  deleteReport,
   fetchJornadas,
   updateBolsasRemote,
   updateKgRemote,
   updateParticipantesRemote,
-  updateJornadaDatosRemote,
-  iniciarJornadaRemote,
+  updateDestinoRemote,
   finalizarJornadaRemote,
   addTestimonioRemote,
+  classifyPhoto,
   signIn,
   signOut,
   getSession,
   subscribeAuth,
   createJornada,
-  deleteJornada,
 } from "./lib/db.js";
-import { addPendiente, listPendientes, deletePendiente } from "./lib/offline.js";
+
 
 // ---- Design tokens ----
 // Display: Space Grotesk · Body: IBM Plex Sans · Data/mono: IBM Plex Mono
@@ -60,6 +56,7 @@ const THEMES = {
     lichen: "#9DBB6F",
     ochre: "#D9A441",
     warn: "#E08A6B",
+    concrete: "#9C9484",
     textPrimary: "#EDF3EA",
     textMuted: "#93A99A",
     navBg: "#0F1C17",
@@ -79,6 +76,7 @@ const THEMES = {
     lichen: "#5C8A3D",
     ochre: "#B9821F",
     warn: "#C25B39",
+    concrete: "#6E6A5E",
     textPrimary: "#16241C",
     textMuted: "#5C6F63",
     navBg: "#E9EFE2",
@@ -91,10 +89,11 @@ const THEMES = {
 };
 
 const CATEGORY_DEFS = [
-  { id: "plastico", label: "Plástico de un solo uso", desc: "Botellas, bolsas, empaques", icon: Trash2, key: "ochre" },
-  { id: "vertimiento", label: "Vertimiento en agua", desc: "Químicos o aguas residuales en ríos o quebradas", icon: Droplets, key: "water" },
-  { id: "organico", label: "Residuo orgánico", desc: "Restos de comida u otro material biodegradable", icon: Leaf, key: "lichen" },
-  { id: "otro", label: "Otro / incumplimiento", desc: "Cualquier otra afectación al páramo", icon: AlertTriangle, key: "warn" },
+  { id: "solido", label: "Residuo sólido", desc: "Bolsas, botellas, empaques, paquetes", icon: Trash2, key: "ochre" },
+  { id: "escombros", label: "Escombros y residuos voluminosos", desc: "Escombros, colchones, muebles, llantas", icon: Construction, key: "concrete" },
+  { id: "pendiente", label: "Recolección pendiente", desc: "Residuos acumulados sin recoger", icon: Clock, key: "lichen" },
+  { id: "vertimiento", label: "Vertimiento", desc: "Químicos o aguas residuales en vía o quebrada", icon: Droplets, key: "water" },
+  { id: "otro", label: "Otro", desc: "Cualquier otra afectación al espacio público", icon: AlertTriangle, key: "warn" },
 ];
 
 const SIZE_DEFS = [
@@ -102,13 +101,52 @@ const SIZE_DEFS = [
   { id: "moderado", label: "Moderado" },
   { id: "extendido", label: "Extendido" },
 ];
+const SIZE_WEIGHT = { puntual: 1, moderado: 2, extendido: 3 };
 
-// Datos de ejemplo: SOLO se usan si Supabase no está conectado.
-// Los contadores van en cero para no mostrar resultados que no han ocurrido.
+const LOCALIDADES = [
+  "Usaquén", "Chapinero", "Santa Fe", "San Cristóbal", "Usme", "Tunjuelito",
+  "Bosa", "Kennedy", "Fontibón", "Engativá", "Suba", "Barrios Unidos",
+  "Teusaquillo", "Los Mártires", "Antonio Nariño", "Puente Aranda",
+  "La Candelaria", "Rafael Uribe Uribe", "Ciudad Bolívar", "Sumapaz",
+];
+
+const TIME_FILTERS = [
+  { id: "todos", label: "Todos" },
+  { id: "24h", label: "24 h" },
+  { id: "7d", label: "7 días" },
+  { id: "30d", label: "30 días" },
+];
+
+function timeAgo(date) {
+  if (!date) return "";
+  const diffMs = Date.now() - new Date(date).getTime();
+  const diffMin = Math.floor(diffMs / 60000);
+  if (diffMin < 60) return diffMin <= 1 ? "hace un momento" : `hace ${diffMin} min`;
+  const diffH = Math.floor(diffMin / 60);
+  if (diffH < 24) return `hace ${diffH} h`;
+  const diffD = Math.floor(diffH / 24);
+  if (diffD === 1) return "hace 1 día";
+  if (diffD < 30) return `hace ${diffD} días`;
+  const diffMonths = Math.floor(diffD / 30);
+  return diffMonths <= 1 ? "hace 1 mes" : `hace ${diffMonths} meses`;
+}
+
+function withinTimeFilter(createdAt, filterId) {
+  if (filterId === "todos" || !createdAt) return true;
+  const diffMs = Date.now() - new Date(createdAt).getTime();
+  const day = 24 * 60 * 60 * 1000;
+  if (filterId === "24h") return diffMs <= day;
+  if (filterId === "7d") return diffMs <= 7 * day;
+  if (filterId === "30d") return diffMs <= 30 * day;
+  return true;
+}
+
 const SEED_REPORTS = [
-  { id: 1, category: "plastico", size: "moderado", lat: 4.6784, lng: -74.0428, time: "ejemplo", photo: null },
-  { id: 2, category: "vertimiento", size: "extendido", lat: 4.6782, lng: -74.0425, time: "ejemplo", photo: null },
-  { id: 3, category: "organico", size: "puntual", lat: 4.6759, lng: -74.0451, time: "ejemplo", photo: null },
+  { id: 1, category: "solido", size: "moderado", lat: 4.6784, lng: -74.0428, localidad: "Santa Fe", createdAt: new Date(Date.now() - 2 * 86400000), photo: null },
+  { id: 2, category: "escombros", size: "puntual", lat: 4.6786, lng: -74.043, localidad: "Santa Fe", createdAt: new Date(Date.now() - 2 * 86400000), photo: null },
+  { id: 3, category: "vertimiento", size: "extendido", lat: 4.6782, lng: -74.0425, localidad: "Kennedy", createdAt: new Date(Date.now() - 1 * 86400000), photo: null },
+  { id: 4, category: "pendiente", size: "puntual", lat: 4.6759, lng: -74.0451, localidad: "Suba", createdAt: new Date(Date.now() - 4 * 86400000), photo: null },
+  { id: 5, category: "otro", size: "moderado", lat: 4.6771, lng: -74.0407, localidad: "Los Mártires", createdAt: new Date(Date.now() - 3 * 86400000), photo: null },
 ];
 
 const STATUS_META = {
@@ -117,81 +155,7 @@ const STATUS_META = {
   proxima: { label: "Próxima" },
 };
 
-const INITIAL_JORNADAS = [
-  {
-    id: 1,
-    title: "Piloto — Parque El Virrey",
-    date: "26 jul 2026",
-    statusKey: "completada",
-    participantes: 0,
-    kgTotal: 0,
-    desglose: [
-      { id: "plastico", label: "Plástico", key: "ochre", bolsas: 0, destino: "Planta de reciclaje aliada" },
-      { id: "vertimiento", label: "Vertimiento", key: "water", bolsas: 0, destino: "Evidencia entregada a la CAR" },
-      { id: "organico", label: "Orgánico", key: "lichen", bolsas: 0, destino: "Compostaje comunitario" },
-    ],
-    testimonios: [],
-  },
-  {
-    id: 2,
-    title: "Sendero Palacio — Chingaza (amortiguación)",
-    date: "6 ago 2026",
-    statusKey: "en_proceso",
-    participantes: 0,
-    kgTotal: 0,
-    desglose: [
-      { id: "plastico", label: "Plástico", key: "ochre", bolsas: 0, destino: "Planta de reciclaje aliada" },
-      { id: "vertimiento", label: "Vertimiento", key: "water", bolsas: 0, destino: "Evidencia entregada a la CAR" },
-      { id: "organico", label: "Orgánico", key: "lichen", bolsas: 0, destino: "Compostaje comunitario" },
-    ],
-    testimonios: [],
-  },
-];
-
-// --- Reportes propios de este dispositivo ---
-// El ciudadano no tiene cuenta, así que guardamos en el navegador los IDs de
-// los reportes que se enviaron desde aquí. Solo esos muestran botón de borrar.
-const MIS_REPORTES_KEY = "ecofind_mis_reportes";
-
-function loadMisReportes() {
-  try {
-    const raw = localStorage.getItem(MIS_REPORTES_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed.map(String) : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveMisReportes(ids) {
-  try {
-    localStorage.setItem(MIS_REPORTES_KEY, JSON.stringify(ids));
-  } catch {
-    /* si el navegador bloquea el almacenamiento, la app sigue funcionando */
-  }
-}
-
-const MESES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
-
-// El calendario entrega la fecha como "2026-09-20". La mostramos como
-// "20 sep 2026". Las jornadas viejas, escritas a mano, se muestran tal cual.
-function formatFecha(valor) {
-  if (!valor) return "";
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(valor);
-  if (!m) return valor;
-  return `${Number(m[3])} ${MESES[Number(m[2]) - 1]} ${m[1]}`;
-}
-
-// "14:30" se muestra como "2:30 p. m."
-function formatHora(valor) {
-  if (!valor) return "";
-  const m = /^(\d{1,2}):(\d{2})/.exec(valor);
-  if (!m) return valor;
-  const h24 = Number(m[1]);
-  const sufijo = h24 < 12 ? "a. m." : "p. m.";
-  const h12 = h24 % 12 || 12;
-  return `${h12}:${m[2]} ${sufijo}`;
-}
+const INITIAL_JORNADAS = [];
 
 function ContourBackdrop({ color, opacity = 0.12 }) {
   const lines = Array.from({ length: 7 });
@@ -207,7 +171,23 @@ function ContourBackdrop({ color, opacity = 0.12 }) {
   );
 }
 
-export default function ChingazaApp() {
+function useMapProjection(reports) {
+  return useMemo(() => {
+    const lats = reports.map((r) => r.lat);
+    const lngs = reports.map((r) => r.lng);
+    const minLat = Math.min(...lats) - 0.0015;
+    const maxLat = Math.max(...lats) + 0.0015;
+    const minLng = Math.min(...lngs) - 0.0015;
+    const maxLng = Math.max(...lngs) + 0.0015;
+    return (lat, lng) => {
+      const x = 40 + ((lng - minLng) / (maxLng - minLng || 0.0001)) * 320;
+      const y = 250 - ((lat - minLat) / (maxLat - minLat || 0.0001)) * 210;
+      return { x, y };
+    };
+  }, [reports]);
+}
+
+export default function EcoFindApp() {
   const [theme, setTheme] = useState("dark");
   const c = THEMES[theme];
 
@@ -217,83 +197,22 @@ export default function ChingazaApp() {
   const [loadingData, setLoadingData] = useState(supabaseEnabled);
   const [expandedId, setExpandedId] = useState(null);
   const [testInput, setTestInput] = useState({ jornadaId: null, nombre: "", texto: "" });
-  const [form, setForm] = useState({ category: null, size: null, photo: null, photoFile: null });
+  const [form, setForm] = useState({ category: null, size: null, localidad: "", photo: null, photoFile: null, analyzing: false, aiSuggested: false, classifyError: false });
   const [gps, setGps] = useState(null);
-  const [gpsError, setGpsError] = useState("");
-  const [gpsLoading, setGpsLoading] = useState(false);
   const [submitted, setSubmitted] = useState(false);
-  const [enviadoOffline, setEnviadoOffline] = useState(false);
-  const [pendientes, setPendientes] = useState(0);
-  const [sincronizando, setSincronizando] = useState(false);
-  const [enLinea, setEnLinea] = useState(typeof navigator === "undefined" || navigator.onLine !== false);
   const fileRef = useRef(null);
 
-  // Reportes enviados desde este dispositivo
-  const [misReportes, setMisReportes] = useState([]);
-  const [verMisReportes, setVerMisReportes] = useState(false);
-  const [verTodosReportes, setVerTodosReportes] = useState(false);
-  const [reporteError, setReporteError] = useState("");
+  // Filtros de la pestaña Inicio (reportes recientes) y Mapa
+  const [timeFilter, setTimeFilter] = useState("todos");
+  const [mapLocalidad, setMapLocalidad] = useState("todas");
+  const [mapSize, setMapSize] = useState("todos");
 
-  // Sesión de organizador (solo ustedes pueden crear/editar/borrar jornadas)
+  // Sesión de organizador (solo ustedes pueden crear/editar jornadas)
   const [isAdmin, setIsAdmin] = useState(false);
   const [showLogin, setShowLogin] = useState(false);
   const [loginForm, setLoginForm] = useState({ email: "", password: "", error: "" });
   const [showNewJornada, setShowNewJornada] = useState(false);
-  const [newJornada, setNewJornada] = useState({ title: "", date: "", hora: "", lugar: "" });
-  const [editandoJornada, setEditandoJornada] = useState(null); // { id, title, date, hora, lugar }
-  const [jornadaError, setJornadaError] = useState("");
-
-  // Guarda en el navegador el ID de un reporte propio de este dispositivo.
-  function registrarComoMio(id) {
-    setMisReportes((prev) => {
-      const next = [...new Set([...prev, String(id)])];
-      saveMisReportes(next);
-      return next;
-    });
-  }
-
-  // Envía la cola de reportes que quedaron guardados sin señal.
-  // Se define aquí arriba porque los efectos de abajo la necesitan.
-  const sincronizar = useCallback(async () => {
-    if (!supabaseEnabled || sincronizando) return;
-    const cola = await listPendientes();
-    if (!cola.length) {
-      setPendientes(0);
-      return;
-    }
-    setSincronizando(true);
-    let enviados = 0;
-    for (const p of cola) {
-      try {
-        const saved = await insertReport({
-          category: p.category,
-          size: p.size,
-          lat: p.lat,
-          lng: p.lng,
-          photoFile: p.photoBlob,
-        });
-        if (saved?.id) registrarComoMio(saved.id);
-        await deletePendiente(p.id);
-        enviados += 1;
-      } catch (err) {
-        // Si sigue sin haber conexión, dejamos el resto para el próximo intento.
-        console.error("Sincronización interrumpida:", err);
-        break;
-      }
-    }
-    const quedan = await listPendientes();
-    setPendientes(quedan.length);
-    setSincronizando(false);
-    if (enviados) {
-      const fresh = await fetchReports();
-      if (fresh) setReports(fresh);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sincronizando]);
-
-  useEffect(() => {
-    setMisReportes(loadMisReportes());
-  }, []);
+  const [newJornada, setNewJornada] = useState({ title: "", date: "" });
 
   useEffect(() => {
     if (!supabaseEnabled) return;
@@ -301,227 +220,6 @@ export default function ChingazaApp() {
     const unsubscribe = subscribeAuth((s) => setIsAdmin(!!s));
     return unsubscribe;
   }, []);
-
-  // Al abrir la app, si ya conectaste Supabase, trae los datos reales.
-  // Si no, se queda con los datos de ejemplo para que la demo siga funcionando.
-  useEffect(() => {
-    if (!supabaseEnabled) return;
-    (async () => {
-      try {
-        const [realReports, realJornadas] = await Promise.all([fetchReports(), fetchJornadas()]);
-        if (realReports) setReports(realReports);
-        if (realJornadas) setJornadas(realJornadas);
-      } catch (e) {
-        console.error("Error cargando datos de Supabase:", e);
-      } finally {
-        setLoadingData(false);
-        if (navigator.onLine !== false) sincronizar();
-      }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    const conectado = () => setEnLinea(true);
-    const desconectado = () => setEnLinea(false);
-    window.addEventListener("online", conectado);
-    window.addEventListener("offline", desconectado);
-    return () => {
-      window.removeEventListener("online", conectado);
-      window.removeEventListener("offline", desconectado);
-    };
-  }, []);
-
-  // Al recuperar la señal, se envía sola la cola guardada en el celular.
-  useEffect(() => {
-    if (!supabaseEnabled) return;
-    listPendientes().then((cola) => setPendientes(cola.length));
-    const alConectar = () => sincronizar();
-    window.addEventListener("online", alConectar);
-    return () => window.removeEventListener("online", alConectar);
-  }, [sincronizar]);
-
-  const totalReportes = reports.length;
-  const kgJornadas = jornadas.filter((j) => j.statusKey === "completada").reduce((a, j) => a + j.kgTotal, 0);
-  const jornadasActivas = jornadas.filter((j) => j.statusKey !== "proxima");
-  const jornadaEnCurso = jornadas.find((j) => j.statusKey === "en_proceso");
-  const todosTestimonios = jornadas.flatMap((j) => j.testimonios.map((t) => ({ ...t, jornadaTitle: j.title, jornadaId: j.id })));
-
-  const esMio = useCallback((r) => misReportes.includes(String(r.id)), [misReportes]);
-  const misReportesVisibles = reports.filter(esMio);
-
-  // Si la jornada seleccionada para testimonios desaparece (por ejemplo,
-  // porque se borró), pasamos a la primera jornada disponible.
-  useEffect(() => {
-    if (!jornadasActivas.length) {
-      if (testInput.jornadaId !== null) setTestInput((f) => ({ ...f, jornadaId: null }));
-      return;
-    }
-    if (!jornadasActivas.some((j) => j.id === testInput.jornadaId)) {
-      setTestInput((f) => ({ ...f, jornadaId: jornadasActivas[0].id }));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jornadas]);
-
-  function captureGps() {
-    setGpsError("");
-    if (!navigator.geolocation) {
-      setGpsError("Este navegador no puede entregar la ubicación. Escríbela manualmente al organizador.");
-      return;
-    }
-    setGpsLoading(true);
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setGps({ lat: pos.coords.latitude.toFixed(5), lng: pos.coords.longitude.toFixed(5) });
-        setGpsLoading(false);
-      },
-      () => {
-        setGpsLoading(false);
-        setGpsError("No se pudo obtener la ubicación. Activa el permiso de ubicación del navegador e inténtalo otra vez.");
-      },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-    );
-  }
-
-  // Punto aproximado para demostraciones en salón, cuando no hay GPS disponible.
-  function usarUbicacionDemo() {
-    const lat = 4.676 + (Math.random() - 0.5) * 0.01;
-    const lng = -74.043 + (Math.random() - 0.5) * 0.01;
-    setGps({ lat: lat.toFixed(5), lng: lng.toFixed(5) });
-    setGpsError("");
-  }
-
-  // Achica la foto antes de enviarla: las funciones serverless rechazan
-  // peticiones grandes y una foto de celular pesa varios MB.
-  function resizeImage(file, maxSide = 1400, quality = 0.85) {
-    return new Promise((resolve, reject) => {
-      const url = URL.createObjectURL(file);
-      const img = new Image();
-      img.onload = () => {
-        URL.revokeObjectURL(url);
-        const escala = Math.min(1, maxSide / Math.max(img.width, img.height));
-        const w = Math.round(img.width * escala) || img.width;
-        const h = Math.round(img.height * escala) || img.height;
-        const canvas = document.createElement("canvas");
-        canvas.width = w;
-        canvas.height = h;
-        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
-        const dataUrl = canvas.toDataURL("image/jpeg", quality);
-        canvas.toBlob(
-          (blob) => (blob ? resolve({ blob, dataUrl }) : reject(new Error("no_se_pudo_comprimir"))),
-          "image/jpeg",
-          quality
-        );
-      };
-      img.onerror = () => {
-        URL.revokeObjectURL(url);
-        reject(new Error("no_se_pudo_leer_la_imagen"));
-      };
-      img.src = url;
-    });
-  }
-
-  async function handlePhoto(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setForm((f) => ({ ...f, photo: URL.createObjectURL(file), photoFile: file }));
-    try {
-      const { blob, dataUrl } = await resizeImage(file);
-      setForm((f) => ({ ...f, photo: dataUrl, photoFile: blob }));
-    } catch (err) {
-      // Si el navegador no puede comprimirla, se sube la foto original.
-      console.error("No se pudo comprimir la foto:", err?.message || err);
-    }
-  }
-
-  function chooseCategory(id) {
-    setForm((f) => ({ ...f, category: id }));
-  }
-
-  async function guardarEnCola(datos) {
-    await addPendiente({
-      category: datos.category,
-      size: datos.size,
-      lat: datos.lat,
-      lng: datos.lng,
-      photoBlob: datos.photoFile || null,
-    });
-    const cola = await listPendientes();
-    setPendientes(cola.length);
-  }
-
-  async function submitReport() {
-    if (!form.category || !form.size || !gps) return;
-    const datos = {
-      category: form.category,
-      size: form.size,
-      lat: parseFloat(gps.lat),
-      lng: parseFloat(gps.lng),
-      photoFile: form.photoFile,
-    };
-    setSubmitted(true);
-    setEnviadoOffline(false);
-
-    if (supabaseEnabled) {
-      if (navigator.onLine === false) {
-        await guardarEnCola(datos);
-        setEnviadoOffline(true);
-      } else {
-        try {
-          const saved = await insertReport(datos);
-          if (saved?.id) registrarComoMio(saved.id);
-          const fresh = await fetchReports();
-          if (fresh) setReports(fresh);
-        } catch (err) {
-          // Puede haber señal débil o intermitente: no perdemos el reporte.
-          console.error("No se pudo enviar ahora, queda en la cola:", err);
-          try {
-            await guardarEnCola(datos);
-            setEnviadoOffline(true);
-          } catch (err2) {
-            console.error("Tampoco se pudo guardar en el celular:", err2);
-          }
-        }
-      }
-    } else {
-      const newId = Date.now();
-      const newReport = { id: newId, ...datos, time: "justo ahora", photo: form.photo };
-      delete newReport.photoFile;
-      setReports((r) => [newReport, ...r]);
-      registrarComoMio(newId);
-    }
-
-    setTimeout(() => {
-      setSubmitted(false);
-      setForm({ category: null, size: null, photo: null, photoFile: null });
-      setGps(null);
-      setGpsError("");
-      setTab("inicio");
-    }, 1800);
-  }
-
-  async function handleDeleteReport(reporte) {
-    const mio = esMio(reporte);
-    const ok = window.confirm(
-      mio
-        ? "¿Borrar este reporte? No se puede recuperar."
-        : "Este reporte no se envió desde este dispositivo. Lo estás borrando como organizador y no se puede recuperar. ¿Continuar?"
-    );
-    if (!ok) return;
-    setReporteError("");
-    try {
-      if (supabaseEnabled) await deleteReport(reporte.id);
-      setReports((rs) => rs.filter((r) => String(r.id) !== String(reporte.id)));
-      const next = misReportes.filter((x) => x !== String(reporte.id));
-      setMisReportes(next);
-      saveMisReportes(next);
-    } catch (err) {
-      console.error("Error borrando el reporte:", err);
-      setReporteError("No se pudo borrar el reporte. Revisa los permisos de borrado en Supabase.");
-    }
-  }
-
-  const catInfo = useCallback((id) => CATEGORY_DEFS.find((x) => x.id === id) || CATEGORY_DEFS[3], []);
 
   async function handleLogin() {
     const { error } = await signIn(loginForm.email, loginForm.password);
@@ -538,55 +236,138 @@ export default function ChingazaApp() {
   }
 
   async function submitNewJornada() {
-    if (!newJornada.title.trim() || !newJornada.date) return;
-    setJornadaError("");
+    if (!newJornada.title.trim() || !newJornada.date.trim()) return;
     try {
-      await createJornada(newJornada.title.trim(), newJornada.date, newJornada.hora, newJornada.lugar.trim());
+      await createJornada(newJornada.title.trim(), newJornada.date.trim());
       const fresh = await fetchJornadas();
       if (fresh) setJornadas(fresh);
-      setNewJornada({ title: "", date: "", hora: "", lugar: "" });
+      setNewJornada({ title: "", date: "" });
       setShowNewJornada(false);
     } catch (err) {
       console.error("Error creando la jornada:", err);
-      setJornadaError("No se pudo crear la jornada. Revisa la conexión y vuelve a intentarlo.");
     }
   }
 
-  function abrirEdicion(j) {
-    // Si la fecha es de las viejas, escritas a mano, el calendario no la
-    // entiende: se deja vacía para que la organizadora elija una nueva.
-    const fechaValida = /^\d{4}-\d{2}-\d{2}$/.test(j.date || "") ? j.date : "";
-    setEditandoJornada({ id: j.id, title: j.title, date: fechaValida, hora: j.hora || "", lugar: j.lugar || "" });
-    setJornadaError("");
+  // Al abrir la app, si ya conectaste Supabase, trae los datos reales.
+  // Si no, se queda con los datos de ejemplo para que la demo siga funcionando.
+  useEffect(() => {
+    if (!supabaseEnabled) return;
+    (async () => {
+      try {
+        const [realReports, realJornadas] = await Promise.all([fetchReports(), fetchJornadas()]);
+        if (realReports) setReports(realReports);
+        if (realJornadas) setJornadas(realJornadas);
+      } catch (e) {
+        console.error("Error cargando datos de Supabase:", e);
+      } finally {
+        setLoadingData(false);
+      }
+    })();
+  }, []);
+
+  const totalReportes = reports.length;
+  const kgJornadas = jornadas.filter((j) => j.statusKey === "completada").reduce((a, j) => a + j.kgTotal, 0);
+  const jornadasActivas = jornadas.filter((j) => j.statusKey !== "proxima");
+  const jornadaEnCurso = jornadas.find((j) => j.statusKey === "en_proceso");
+  const todosTestimonios = jornadas.flatMap((j) => j.testimonios.map((t) => ({ ...t, jornadaTitle: j.title, jornadaId: j.id })));
+
+  const reportsByTime = useMemo(
+    () =>
+      reports
+        .filter((r) => withinTimeFilter(r.createdAt, timeFilter))
+        .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)),
+    [reports, timeFilter]
+  );
+
+  const reportsForMap = useMemo(
+    () =>
+      reports.filter((r) => {
+        const matchLocalidad =
+          mapLocalidad === "todas" || (mapLocalidad === "sin_localidad" ? !r.localidad : r.localidad === mapLocalidad);
+        const matchSize = mapSize === "todos" || r.size === mapSize;
+        return matchLocalidad && matchSize;
+      }),
+    [reports, mapLocalidad, mapSize]
+  );
+
+  const localidadRanking = useMemo(() => {
+    const totals = {};
+    reports.forEach((r) => {
+      if (!r.localidad) return;
+      if (mapSize !== "todos" && r.size !== mapSize) return;
+      totals[r.localidad] = (totals[r.localidad] || 0) + (SIZE_WEIGHT[r.size] || 1);
+    });
+    return Object.entries(totals).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  }, [reports, mapSize]);
+
+  function captureGps() {
+    const lat = 4.676 + (Math.random() - 0.5) * 0.01;
+    const lng = -74.043 + (Math.random() - 0.5) * 0.01;
+    setGps({ lat: lat.toFixed(5), lng: lng.toFixed(5) });
   }
 
-  async function guardarEdicion() {
-    if (!editandoJornada) return;
-    const { id, title, date, hora, lugar } = editandoJornada;
-    if (!title.trim() || !date) return;
-    const datos = { title: title.trim(), date, hora, lugar: lugar.trim() };
+  function fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function handlePhoto(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    setForm((f) => ({ ...f, photo: url, photoFile: file, analyzing: true, aiSuggested: false, classifyError: false }));
     try {
-      if (supabaseEnabled) await updateJornadaDatosRemote(id, datos);
-      setJornadas((js) => js.map((j) => (j.id === id ? { ...j, ...datos } : j)));
-      setEditandoJornada(null);
+      const base64 = await fileToBase64(file);
+      const result = await classifyPhoto(base64);
+      setForm((f) => ({ ...f, category: result.category, analyzing: false, aiSuggested: true }));
     } catch (err) {
-      console.error("Error editando la jornada:", err);
-      setJornadaError("No se pudieron guardar los cambios. Revisa la conexión y vuelve a intentarlo.");
+      // Si la clasificación automática falla (o aún no está configurada la clave),
+      // la persona simplemente elige la categoría a mano.
+      setForm((f) => ({ ...f, analyzing: false, classifyError: true }));
     }
   }
 
-  async function handleDeleteJornada(j) {
-    const ok = window.confirm(`¿Borrar la jornada "${j.title}"? También se borran sus bolsas registradas y sus testimonios.`);
-    if (!ok) return;
-    setJornadaError("");
-    try {
-      if (supabaseEnabled) await deleteJornada(j.id);
-      setJornadas((js) => js.filter((x) => x.id !== j.id));
-      if (expandedId === j.id) setExpandedId(null);
-    } catch (err) {
-      console.error("Error borrando la jornada:", err);
-      setJornadaError("No se pudo borrar la jornada. Faltan las políticas de borrado en Supabase (jornadas, jornada_desglose y testimonios).");
+  function chooseCategory(id) {
+    setForm((f) => ({ ...f, category: id, aiSuggested: false }));
+  }
+
+  async function submitReport() {
+    if (!form.category || !form.size || !form.localidad || !gps) return;
+    const lat = parseFloat(gps.lat);
+    const lng = parseFloat(gps.lng);
+    setSubmitted(true);
+
+    if (supabaseEnabled) {
+      try {
+        await insertReport({ category: form.category, size: form.size, localidad: form.localidad, lat, lng, photoFile: form.photoFile });
+        const fresh = await fetchReports();
+        if (fresh) setReports(fresh);
+      } catch (err) {
+        console.error("Error guardando el reporte:", err);
+      }
+    } else {
+      const newReport = { id: reports.length + 1, category: form.category, size: form.size, localidad: form.localidad, lat, lng, createdAt: new Date(), photo: form.photo };
+      setReports((r) => [newReport, ...r]);
     }
+
+    setTimeout(() => {
+      setSubmitted(false);
+      setForm({ category: null, size: null, localidad: "", photo: null, photoFile: null, analyzing: false, aiSuggested: false, classifyError: false });
+      setGps(null);
+      setTab("inicio");
+    }, 1400);
+  }
+
+  const catInfo = useCallback((id) => CATEGORY_DEFS.find((x) => x.id === id) || CATEGORY_DEFS.find((x) => x.id === "otro"), []);
+
+  function heatColor(weight) {
+    if (weight >= 5) return c.warn;
+    if (weight >= 3) return c.ochre;
+    return c.lichen;
   }
 
   function updateBolsas(jornadaId, catId, delta) {
@@ -609,6 +390,24 @@ export default function ChingazaApp() {
     if (supabaseEnabled && rowId) updateBolsasRemote(rowId, nextValue);
   }
 
+  function updateDestino(jornadaId, catId, value) {
+    let rowId = null;
+    setJornadas((js) =>
+      js.map((j) => {
+        if (j.id !== jornadaId) return j;
+        return {
+          ...j,
+          desglose: j.desglose.map((d) => {
+            if (d.id !== catId) return d;
+            rowId = d.rowId;
+            return { ...d, destino: value };
+          }),
+        };
+      })
+    );
+    if (supabaseEnabled && rowId) updateDestinoRemote(rowId, value);
+  }
+
   function updateKg(jornadaId, value) {
     const v = Math.max(0, Number(value) || 0);
     setJornadas((js) => js.map((j) => (j.id === jornadaId ? { ...j, kgTotal: v } : j)));
@@ -627,18 +426,13 @@ export default function ChingazaApp() {
     if (supabaseEnabled) updateParticipantesRemote(jornadaId, next);
   }
 
-  function iniciarJornada(jornadaId) {
-    setJornadas((js) => js.map((j) => (j.id === jornadaId ? { ...j, statusKey: "en_proceso" } : j)));
-    if (supabaseEnabled) iniciarJornadaRemote(jornadaId);
-  }
-
   function finalizarJornada(jornadaId) {
     setJornadas((js) => js.map((j) => (j.id === jornadaId ? { ...j, statusKey: "completada" } : j)));
     if (supabaseEnabled) finalizarJornadaRemote(jornadaId);
   }
 
   async function addTestimonio() {
-    if (!testInput.texto.trim() || !testInput.jornadaId) return;
+    if (!testInput.texto.trim()) return;
     const nombre = testInput.nombre.trim() || "Anónimo";
     const texto = testInput.texto.trim();
     const jornadaId = testInput.jornadaId;
@@ -657,7 +451,7 @@ export default function ChingazaApp() {
   }
 
   const statusColor = (key) => (key === "completada" ? c.lichen : key === "en_proceso" ? c.water : c.ochre);
-  const listaReportes = verMisReportes ? misReportesVisibles : verTodosReportes ? reports : reports.slice(0, 4);
+
 
   return (
     <div className="ecofind-page" style={{ fontFamily: "'IBM Plex Sans', sans-serif", background: c.bg }}>
@@ -699,6 +493,7 @@ export default function ChingazaApp() {
         <div style={{ padding: "10px 20px 6px", display: "flex", justifyContent: "space-between", alignItems: "center", fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, color: c.textMuted }}>
           <span>EcoFind</span>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span>9:41</span>
             <div
               onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
               title="Cambiar modo día / noche"
@@ -716,14 +511,14 @@ export default function ChingazaApp() {
           </div>
           <div style={{ position: "relative" }}>
             <div style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: 19, fontWeight: 700, color: c.textPrimary }}>
-              {tab === "inicio" && "Monitoreo Chingaza"}
+              {tab === "inicio" && "Monitoreo Bogotá"}
               {tab === "reportar" && "Nuevo reporte"}
               {tab === "mapa" && "Mapa de reportes"}
               {tab === "jornadas" && "Jornadas"}
               {tab === "testimonios" && "Testimonios"}
             </div>
             <div style={{ fontSize: 11, color: c.lichen, marginTop: 2 }}>
-              {tab === "inicio" && "Vigilancia ciudadana del sistema hídrico"}
+              {tab === "inicio" && "Vigilancia ciudadana del espacio público"}
               {tab === "reportar" && "Solo foto y ubicación · la recolección se hace en jornadas"}
               {tab === "mapa" && "Zonas con más reportes acumulados"}
               {tab === "jornadas" && "Registro de recolección de bolsas por jornada"}
@@ -742,29 +537,6 @@ export default function ChingazaApp() {
           )}
           {tab === "inicio" && !loadingData && (
             <div>
-              {(!enLinea || pendientes > 0) && (
-                <div style={{ background: c.surfaceAlt, border: `1px solid ${c.border}`, borderRadius: 12, padding: "10px 12px", marginBottom: 12 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: pendientes > 0 ? 8 : 0 }}>
-                    <CloudOff size={14} color={enLinea ? c.ochre : c.warn} />
-                    <span style={{ fontSize: 11, color: c.textPrimary }}>
-                      {!enLinea && pendientes > 0 && `Sin señal · ${pendientes} ${pendientes === 1 ? "reporte guardado" : "reportes guardados"} en el celular`}
-                      {!enLinea && pendientes === 0 && "Sin señal · puedes seguir reportando, se enviará después"}
-                      {enLinea && pendientes > 0 && `${pendientes} ${pendientes === 1 ? "reporte pendiente" : "reportes pendientes"} de enviar`}
-                    </span>
-                  </div>
-                  {pendientes > 0 && enLinea && (
-                    <button
-                      onClick={sincronizar}
-                      disabled={sincronizando}
-                      style={{ width: "100%", padding: "8px", borderRadius: 8, border: "none", background: sincronizando ? c.surface : c.water, color: sincronizando ? c.textMuted : c.bg, fontSize: 11, fontWeight: 600, cursor: sincronizando ? "wait" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}
-                    >
-                      <UploadCloud size={13} />
-                      {sincronizando ? "Enviando…" : "Enviar ahora"}
-                    </button>
-                  )}
-                </div>
-              )}
-
               <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
                 <div style={{ background: c.surface, borderRadius: 14, padding: "14px 16px", flex: 1, border: `1px solid ${c.border}` }}>
                   <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 22, fontWeight: 600, color: c.water }}>{totalReportes}</div>
@@ -777,59 +549,40 @@ export default function ChingazaApp() {
                 </div>
               </div>
 
-              <div style={{ background: c.surface, borderRadius: 14, padding: 16, border: `1px solid ${c.border}`, marginBottom: 14 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                  <Calendar size={16} color={c.water} />
-                  <span style={{ fontSize: 12, color: c.textMuted }}>Jornada en curso ahora</span>
+              {jornadaEnCurso && (
+                <div style={{ background: c.surface, borderRadius: 14, padding: 16, border: `1px solid ${c.border}`, marginBottom: 14 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                    <Calendar size={16} color={c.water} />
+                    <span style={{ fontSize: 12, color: c.textMuted }}>Jornada en curso ahora</span>
+                  </div>
+                  <div style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: 15, color: c.textPrimary, fontWeight: 600 }}>{jornadaEnCurso.title}</div>
+                  <div style={{ fontSize: 12, color: c.water, marginTop: 2 }}>Registrando recolección de bolsas en vivo</div>
                 </div>
-                {jornadaEnCurso ? (
-                  <>
-                    <div style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: 15, color: c.textPrimary, fontWeight: 600 }}>{jornadaEnCurso.title}</div>
-                    {(jornadaEnCurso.hora || jornadaEnCurso.lugar) && (
-                      <div style={{ fontSize: 11, color: c.textMuted, marginTop: 3 }}>
-                        {[formatHora(jornadaEnCurso.hora), jornadaEnCurso.lugar].filter(Boolean).join(" · ")}
-                      </div>
-                    )}
-                    <div style={{ fontSize: 12, color: c.water, marginTop: 2 }}>Registrando recolección de bolsas en vivo</div>
-                  </>
-                ) : (
-                  <div style={{ fontSize: 12, color: c.textMuted }}>No hay ninguna jornada en curso. Los reportes ciudadanos se siguen recibiendo.</div>
-                )}
-              </div>
+              )}
 
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                <span style={{ fontSize: 12, color: c.textMuted, fontWeight: 600 }}>{verMisReportes ? "Mis reportes" : "Reportes recientes"}</span>
-                {misReportesVisibles.length > 0 && (
-                  <button
-                    onClick={() => setVerMisReportes((v) => !v)}
-                    style={{ fontSize: 10, color: c.water, background: "none", border: "none", cursor: "pointer", padding: 0 }}
-                  >
-                    {verMisReportes ? "Ver todos" : `Ver los míos (${misReportesVisibles.length})`}
-                  </button>
-                )}
+                <span style={{ fontSize: 12, color: c.textMuted, fontWeight: 600 }}>Reportes recientes</span>
               </div>
-
-              {isAdmin && (
-                <div style={{ fontSize: 10, color: c.textMuted, background: c.surfaceAlt, borderRadius: 8, padding: "7px 10px", marginBottom: 8 }}>
-                  Sesión de organizador: puedes borrar cualquier reporte, incluidos los de prueba antiguos.
-                </div>
+              <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
+                {TIME_FILTERS.map((tf) => {
+                  const active = timeFilter === tf.id;
+                  return (
+                    <div
+                      key={tf.id}
+                      onClick={() => setTimeFilter(tf.id)}
+                      style={{ fontSize: 10, padding: "5px 10px", borderRadius: 20, cursor: "pointer", border: active ? `1px solid ${c.water}` : `1px solid ${c.border}`, background: active ? c.surfaceAlt : "transparent", color: active ? c.textPrimary : c.textMuted, fontWeight: active ? 600 : 400 }}
+                    >
+                      {tf.label}
+                    </div>
+                  );
+                })}
+              </div>
+              {reportsByTime.length === 0 && (
+                <div style={{ fontSize: 11, color: c.textMuted, padding: "10px 0" }}>No hay reportes en este rango de tiempo.</div>
               )}
-
-              {reporteError && (
-                <div style={{ fontSize: 10, color: c.warn, background: c.surfaceAlt, borderRadius: 8, padding: "7px 10px", marginBottom: 8 }}>{reporteError}</div>
-              )}
-
-              {listaReportes.length === 0 && (
-                <div style={{ fontSize: 11, color: c.textMuted, background: c.surface, border: `1px solid ${c.border}`, borderRadius: 10, padding: 12 }}>
-                  {verMisReportes ? "Todavía no has enviado reportes desde este dispositivo." : "Aún no hay reportes. El primero se registra desde la pestaña Reportar."}
-                </div>
-              )}
-
-              {listaReportes.map((r) => {
+              {reportsByTime.map((r) => {
                 const cat = catInfo(r.category);
                 const Icon = cat.icon;
-                const mio = esMio(r);
-                const puedeBorrar = mio || isAdmin;
                 return (
                   <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 0", borderBottom: `1px solid ${c.border}` }}>
                     <div style={{ width: 32, height: 32, borderRadius: 8, background: c.surfaceAlt, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
@@ -838,31 +591,13 @@ export default function ChingazaApp() {
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 13, color: c.textPrimary }}>{cat.label}</div>
                       <div style={{ fontSize: 10, color: c.textMuted, fontFamily: "'IBM Plex Mono', monospace" }}>
-                        {Number(r.lat).toFixed(4)}, {Number(r.lng).toFixed(4)} · {r.time}
+                        {r.localidad ? `${r.localidad} · ` : ""}{r.lat.toFixed(4)}, {r.lng.toFixed(4)} · {timeAgo(r.createdAt)}
                       </div>
                     </div>
                     <div style={{ fontSize: 10, color: c.textMuted, textTransform: "capitalize" }}>{r.size}</div>
-                    {puedeBorrar && (
-                      <button
-                        onClick={() => handleDeleteReport(r)}
-                        title={mio ? "Borrar mi reporte" : "Borrar reporte (organizador)"}
-                        style={{ background: "none", border: "none", cursor: "pointer", padding: 4, display: "flex", alignItems: "center", opacity: mio ? 1 : 0.7 }}
-                      >
-                        <Trash size={14} color={c.warn} />
-                      </button>
-                    )}
                   </div>
                 );
               })}
-
-              {!verMisReportes && reports.length > 4 && (
-                <button
-                  onClick={() => setVerTodosReportes((v) => !v)}
-                  style={{ width: "100%", marginTop: 10, padding: "8px", borderRadius: 8, border: `1px solid ${c.border}`, background: "none", color: c.water, fontSize: 11, cursor: "pointer" }}
-                >
-                  {verTodosReportes ? "Ver solo los recientes" : `Ver los ${reports.length} reportes`}
-                </button>
-              )}
             </div>
           )}
 
@@ -870,17 +605,11 @@ export default function ChingazaApp() {
             <div>
               {submitted ? (
                 <div style={{ marginTop: 60, display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
-                  <div style={{ width: 52, height: 52, borderRadius: 26, background: enviadoOffline ? c.ochre : c.lichen, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    {enviadoOffline ? <CloudOff size={24} color={c.bg} /> : <Check size={26} color={c.bg} />}
+                  <div style={{ width: 52, height: 52, borderRadius: 26, background: c.lichen, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <Check size={26} color={c.bg} />
                   </div>
-                  <div style={{ color: c.textPrimary, fontFamily: "'Space Grotesk', sans-serif" }}>
-                    {enviadoOffline ? "Guardado en tu celular" : "Reporte enviado"}
-                  </div>
-                  <div style={{ color: c.textMuted, fontSize: 11, textAlign: "center", padding: "0 30px", lineHeight: 1.4 }}>
-                    {enviadoOffline
-                      ? "Se enviará solo cuando vuelvas a tener señal. No cierres la app hasta entonces."
-                      : "La recolección real se coordina en la próxima jornada de esta zona"}
-                  </div>
+                  <div style={{ color: c.textPrimary, fontFamily: "'Space Grotesk', sans-serif" }}>Reporte enviado</div>
+                  <div style={{ color: c.textMuted, fontSize: 11, textAlign: "center", padding: "0 30px" }}>La recolección real se coordina en la próxima jornada de esta zona</div>
                 </div>
               ) : (
                 <>
@@ -898,6 +627,25 @@ export default function ChingazaApp() {
                     )}
                   </div>
 
+                  {form.analyzing && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 14 }}>
+                      <Sparkles size={13} color={c.water} />
+                      <span style={{ fontSize: 11, color: c.water }}>Analizando foto con IA…</span>
+                    </div>
+                  )}
+                  {form.aiSuggested && !form.analyzing && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 14, background: c.surfaceAlt, borderRadius: 8, padding: "7px 10px" }}>
+                      <Sparkles size={13} color={c.water} />
+                      <span style={{ fontSize: 11, color: c.textPrimary }}>La IA sugirió esta categoría — corrígela abajo si no es correcta</span>
+                    </div>
+                  )}
+                  {form.classifyError && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 14, background: c.surfaceAlt, borderRadius: 8, padding: "7px 10px" }}>
+                      <AlertCircle size={13} color={c.warn} />
+                      <span style={{ fontSize: 11, color: c.textPrimary }}>No se pudo clasificar automáticamente — elige la categoría manualmente</span>
+                    </div>
+                  )}
+
                   <div style={{ fontSize: 12, color: c.textMuted, marginBottom: 8, fontWeight: 600 }}>Categoría</div>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 16 }}>
                     {CATEGORY_DEFS.map((cat) => {
@@ -909,6 +657,7 @@ export default function ChingazaApp() {
                           onClick={() => chooseCategory(cat.id)}
                           style={{ border: active ? `1.5px solid ${c[cat.key]}` : `1px solid ${c.border}`, background: active ? c.surfaceAlt : c.surface, borderRadius: 10, padding: "10px 8px", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, cursor: "pointer", textAlign: "center", position: "relative", minHeight: 84 }}
                         >
+                          {active && form.aiSuggested && <Sparkles size={11} color={c.water} style={{ position: "absolute", top: 6, right: 6 }} />}
                           <Icon size={18} color={c[cat.key]} />
                           <span style={{ fontSize: 10, color: c.textPrimary, fontWeight: 600 }}>{cat.label}</span>
                           <span style={{ fontSize: 9, color: c.textMuted, lineHeight: 1.25 }}>{cat.desc}</span>
@@ -930,6 +679,18 @@ export default function ChingazaApp() {
                     })}
                   </div>
 
+                  <div style={{ fontSize: 12, color: c.textMuted, marginBottom: 8, fontWeight: 600 }}>Localidad</div>
+                  <select
+                    value={form.localidad}
+                    onChange={(e) => setForm((f) => ({ ...f, localidad: e.target.value }))}
+                    style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", borderRadius: 10, border: `1px solid ${c.border}`, background: c.surface, color: form.localidad ? c.textPrimary : c.textMuted, fontSize: 12, marginBottom: 18 }}
+                  >
+                    <option value="">Selecciona tu localidad</option>
+                    {LOCALIDADES.map((loc) => (
+                      <option key={loc} value={loc}>{loc}</option>
+                    ))}
+                  </select>
+
                   <div style={{ fontSize: 12, color: c.textMuted, marginBottom: 8, fontWeight: 600 }}>Ubicación</div>
                   {gps ? (
                     <div style={{ display: "flex", alignItems: "center", gap: 8, background: c.surface, border: `1px solid ${c.border}`, borderRadius: 10, padding: "10px 12px", marginBottom: 18 }}>
@@ -937,26 +698,16 @@ export default function ChingazaApp() {
                       <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: c.textPrimary }}>{gps.lat}, {gps.lng}</span>
                     </div>
                   ) : (
-                    <div style={{ marginBottom: 18 }}>
-                      <div onClick={captureGps} style={{ display: "flex", alignItems: "center", gap: 8, background: c.surface, border: `1px dashed ${c.border}`, borderRadius: 10, padding: "10px 12px", cursor: "pointer" }}>
-                        <MapPin size={15} color={c.textMuted} />
-                        <span style={{ fontSize: 12, color: c.textMuted }}>{gpsLoading ? "Buscando ubicación…" : "Capturar ubicación GPS"}</span>
-                      </div>
-                      {gpsError && (
-                        <div style={{ marginTop: 8, background: c.surfaceAlt, borderRadius: 8, padding: "8px 10px" }}>
-                          <div style={{ fontSize: 10, color: c.warn, marginBottom: 6 }}>{gpsError}</div>
-                          <button onClick={usarUbicacionDemo} style={{ fontSize: 10, color: c.water, background: "none", border: "none", cursor: "pointer", padding: 0, textDecoration: "underline" }}>
-                            Usar un punto aproximado (solo para demostraciones)
-                          </button>
-                        </div>
-                      )}
+                    <div onClick={captureGps} style={{ display: "flex", alignItems: "center", gap: 8, background: c.surface, border: `1px dashed ${c.border}`, borderRadius: 10, padding: "10px 12px", marginBottom: 18, cursor: "pointer" }}>
+                      <MapPin size={15} color={c.textMuted} />
+                      <span style={{ fontSize: 12, color: c.textMuted }}>Capturar ubicación GPS</span>
                     </div>
                   )}
 
                   <button
                     onClick={submitReport}
-                    disabled={!form.category || !form.size || !gps}
-                    style={{ width: "100%", padding: "12px", borderRadius: 12, border: "none", background: !form.category || !form.size || !gps ? c.surfaceAlt : c.lichen, color: !form.category || !form.size || !gps ? c.textMuted : c.bg, fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, fontSize: 14, cursor: !form.category || !form.size || !gps ? "not-allowed" : "pointer" }}
+                    disabled={!form.category || !form.size || !form.localidad || !gps}
+                    style={{ width: "100%", padding: "12px", borderRadius: 12, border: "none", background: !form.category || !form.size || !form.localidad || !gps ? c.surfaceAlt : c.lichen, color: !form.category || !form.size || !form.localidad || !gps ? c.textMuted : c.bg, fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, fontSize: 14, cursor: !form.category || !form.size || !form.localidad || !gps ? "not-allowed" : "pointer" }}
                   >
                     Enviar reporte
                   </button>
@@ -967,11 +718,35 @@ export default function ChingazaApp() {
 
           {tab === "mapa" && (
             <div>
-              <div style={{ position: "relative", height: 340, borderRadius: 14, overflow: "hidden", border: `1px solid ${c.border}`, marginBottom: 12 }}>
-                <RealMap reports={reports} catInfo={catInfo} colors={c} theme={theme} />
+              <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                <select
+                  value={mapLocalidad}
+                  onChange={(e) => setMapLocalidad(e.target.value)}
+                  style={{ flex: 1, boxSizing: "border-box", padding: "8px 10px", borderRadius: 10, border: `1px solid ${c.border}`, background: c.surface, color: c.textPrimary, fontSize: 11 }}
+                >
+                  <option value="todas">Todas las localidades</option>
+                  {LOCALIDADES.map((loc) => (
+                    <option key={loc} value={loc}>{loc}</option>
+                  ))}
+                  <option value="sin_localidad">Sin localidad (reportes antiguos)</option>
+                </select>
+                <select
+                  value={mapSize}
+                  onChange={(e) => setMapSize(e.target.value)}
+                  style={{ flex: 1, boxSizing: "border-box", padding: "8px 10px", borderRadius: 10, border: `1px solid ${c.border}`, background: c.surface, color: c.textPrimary, fontSize: 11 }}
+                >
+                  <option value="todos">Toda acumulación</option>
+                  {SIZE_DEFS.map((s) => (
+                    <option key={s.id} value={s.id}>{s.label}</option>
+                  ))}
+                </select>
               </div>
 
-              <div style={{ display: "flex", gap: 14, marginBottom: 10, flexWrap: "wrap" }}>
+              <div style={{ position: "relative", height: 340, borderRadius: 14, overflow: "hidden", border: `1px solid ${c.border}`, marginBottom: 12 }}>
+                <RealMap reports={reportsForMap} catInfo={catInfo} colors={c} theme={theme} />
+              </div>
+
+              <div style={{ display: "flex", gap: 14, marginBottom: 14, flexWrap: "wrap" }}>
                 {CATEGORY_DEFS.map((cat) => (
                   <div key={cat.id} style={{ display: "flex", alignItems: "center", gap: 5 }}>
                     <div style={{ width: 8, height: 8, borderRadius: 4, background: c[cat.key] }} />
@@ -979,6 +754,25 @@ export default function ChingazaApp() {
                   </div>
                 ))}
               </div>
+
+              <div style={{ fontSize: 12, color: c.textMuted, marginBottom: 8, fontWeight: 600 }}>
+                Localidades con más acumulación{mapSize !== "todos" ? ` · ${SIZE_DEFS.find((s) => s.id === mapSize)?.label}` : ""}
+              </div>
+              {localidadRanking.length === 0 ? (
+                <div style={{ fontSize: 11, color: c.textMuted, background: c.surface, border: `1px solid ${c.border}`, borderRadius: 10, padding: "10px 12px", marginBottom: 12 }}>
+                  Aún no hay suficientes reportes con localidad para mostrar un ranking.
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
+                  {localidadRanking.map(([loc, score], i) => (
+                    <div key={loc} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: c.surface, border: `1px solid ${c.border}`, borderRadius: 10, padding: "8px 12px" }}>
+                      <span style={{ fontSize: 12, color: c.textPrimary }}>{i + 1}. {loc}</span>
+                      <span style={{ fontSize: 11, color: c.water, fontFamily: "'IBM Plex Mono', monospace" }}>{score} pts</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
               <div style={{ fontSize: 10, color: c.textMuted, background: c.surface, border: `1px solid ${c.border}`, borderRadius: 10, padding: "8px 12px" }}>
                 Mapa real (OpenStreetMap) · la mancha de calor muestra dónde se acumulan más reportes
               </div>
@@ -1040,44 +834,16 @@ export default function ChingazaApp() {
                         placeholder="Nombre de la jornada"
                         value={newJornada.title}
                         onChange={(e) => setNewJornada((f) => ({ ...f, title: e.target.value }))}
-                        style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: `1px solid ${c.border}`, background: c.surfaceAlt, color: c.textPrimary, fontSize: 11, marginBottom: 8 }}
+                        style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: `1px solid ${c.border}`, background: c.surfaceAlt, color: c.textPrimary, fontSize: 11, marginBottom: 6 }}
                       />
-
-                      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-                        <div style={{ flex: 1 }}>
-                          <label style={{ fontSize: 10, color: c.textMuted, display: "block", marginBottom: 3 }}>Fecha</label>
-                          <input
-                            type="date"
-                            value={newJornada.date}
-                            onChange={(e) => setNewJornada((f) => ({ ...f, date: e.target.value }))}
-                            style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: `1px solid ${c.border}`, background: c.surfaceAlt, color: c.textPrimary, fontSize: 11, fontFamily: "'IBM Plex Sans', sans-serif", colorScheme: theme === "dark" ? "dark" : "light" }}
-                          />
-                        </div>
-                        <div style={{ flex: 1 }}>
-                          <label style={{ fontSize: 10, color: c.textMuted, display: "block", marginBottom: 3 }}>Hora de encuentro</label>
-                          <input
-                            type="time"
-                            value={newJornada.hora}
-                            onChange={(e) => setNewJornada((f) => ({ ...f, hora: e.target.value }))}
-                            style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: `1px solid ${c.border}`, background: c.surfaceAlt, color: c.textPrimary, fontSize: 11, fontFamily: "'IBM Plex Sans', sans-serif", colorScheme: theme === "dark" ? "dark" : "light" }}
-                          />
-                        </div>
-                      </div>
-
-                      <label style={{ fontSize: 10, color: c.textMuted, display: "block", marginBottom: 3 }}>Punto de encuentro</label>
                       <input
-                        placeholder="Ej: entrada del sendero, parqueadero de Guasca"
-                        value={newJornada.lugar}
-                        onChange={(e) => setNewJornada((f) => ({ ...f, lugar: e.target.value }))}
+                        placeholder="Fecha (ej: 20 sep 2026)"
+                        value={newJornada.date}
+                        onChange={(e) => setNewJornada((f) => ({ ...f, date: e.target.value }))}
                         style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: `1px solid ${c.border}`, background: c.surfaceAlt, color: c.textPrimary, fontSize: 11, marginBottom: 8 }}
                       />
-
                       <div style={{ display: "flex", gap: 8 }}>
-                        <button
-                          onClick={submitNewJornada}
-                          disabled={!newJornada.title.trim() || !newJornada.date}
-                          style={{ flex: 1, padding: "8px", borderRadius: 8, border: "none", background: !newJornada.title.trim() || !newJornada.date ? c.surfaceAlt : c.lichen, color: !newJornada.title.trim() || !newJornada.date ? c.textMuted : c.bg, fontSize: 12, fontWeight: 600, cursor: !newJornada.title.trim() || !newJornada.date ? "not-allowed" : "pointer" }}
-                        >
+                        <button onClick={submitNewJornada} style={{ flex: 1, padding: "8px", borderRadius: 8, border: "none", background: c.lichen, color: c.bg, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
                           Crear jornada
                         </button>
                         <button onClick={() => setShowNewJornada(false)} style={{ flex: 1, padding: "8px", borderRadius: 8, border: `1px solid ${c.border}`, background: "none", color: c.textMuted, fontSize: 12, cursor: "pointer" }}>
@@ -1096,22 +862,10 @@ export default function ChingazaApp() {
                 </div>
               )}
 
-              {jornadaError && (
-                <div style={{ fontSize: 10, color: c.warn, background: c.surfaceAlt, borderRadius: 8, padding: "8px 10px", marginBottom: 12 }}>{jornadaError}</div>
-              )}
-
-              {jornadas.length === 0 && !loadingData && (
-                <div style={{ fontSize: 11, color: c.textMuted, background: c.surface, border: `1px solid ${c.border}`, borderRadius: 10, padding: 12 }}>
-                  No hay jornadas registradas. Inicia sesión como organizador para crear la primera.
-                </div>
-              )}
-
               {jornadas.map((j) => {
                 const expanded = expandedId === j.id;
                 const totalBolsas = j.desglose.reduce((a, d) => a + d.bolsas, 0);
-                // El organizador puede corregir datos también en jornadas ya
-                // finalizadas (por ejemplo, ajustar los kg que quedaron mal).
-                const canEdit = isAdmin && j.statusKey !== "proxima";
+                const canEdit = isAdmin && j.statusKey === "en_proceso";
                 return (
                   <div key={j.id} style={{ background: c.surface, borderRadius: 14, border: `1px solid ${c.border}`, marginBottom: 12, overflow: "hidden" }}>
                     <div
@@ -1120,118 +874,19 @@ export default function ChingazaApp() {
                     >
                       <div>
                         <div style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: 14, color: c.textPrimary, fontWeight: 600 }}>{j.title}</div>
-                        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 4, flexWrap: "wrap" }}>
-                          <span style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: c.textMuted }}>
-                            <Calendar size={11} />
-                            {formatFecha(j.date)}
-                          </span>
-                          {j.hora && (
-                            <span style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: c.textMuted }}>
-                              <Clock size={11} />
-                              {formatHora(j.hora)}
-                            </span>
-                          )}
-                        </div>
-                        {j.lugar && (
-                          <div style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: c.water, marginTop: 3 }}>
-                            <MapPin size={11} />
-                            <span>{j.lugar}</span>
-                          </div>
-                        )}
+                        <div style={{ fontSize: 11, color: c.textMuted, marginTop: 2 }}>{j.date}</div>
                         <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
                           <div style={{ fontSize: 10, padding: "3px 8px", borderRadius: 20, background: `${statusColor(j.statusKey)}22`, color: statusColor(j.statusKey) }}>
                             {STATUS_META[j.statusKey].label}
                           </div>
-                          {j.statusKey === "proxima" && <span style={{ fontSize: 10, color: c.textMuted }}>Requiere autorización PNN</span>}
+                          {j.statusKey === "proxima" && <span style={{ fontSize: 10, color: c.textMuted }}>Fecha por confirmar</span>}
                         </div>
                       </div>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-                        {isAdmin && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setExpandedId(j.id);
-                              abrirEdicion(j);
-                            }}
-                            title="Editar fecha, hora y lugar"
-                            style={{ background: "none", border: "none", cursor: "pointer", padding: 4, display: "flex", alignItems: "center" }}
-                          >
-                            <Pencil size={14} color={c.textMuted} />
-                          </button>
-                        )}
-                        {isAdmin && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDeleteJornada(j);
-                            }}
-                            title="Borrar jornada"
-                            style={{ background: "none", border: "none", cursor: "pointer", padding: 4, display: "flex", alignItems: "center" }}
-                          >
-                            <Trash size={15} color={c.warn} />
-                          </button>
-                        )}
-                        <ChevronDown size={16} color={c.textMuted} style={{ transform: expanded ? "rotate(180deg)" : "none", transition: "transform 0.15s ease" }} />
-                      </div>
+                      <ChevronDown size={16} color={c.textMuted} style={{ transform: expanded ? "rotate(180deg)" : "none", transition: "transform 0.15s ease" }} />
                     </div>
 
                     {expanded && (
                       <div style={{ padding: "0 14px 16px" }}>
-                        {editandoJornada?.id === j.id && (
-                          <div style={{ background: c.surfaceAlt, border: `1px solid ${c.border}`, borderRadius: 10, padding: 12, marginBottom: 14 }}>
-                            <div style={{ fontSize: 11, color: c.textMuted, fontWeight: 600, marginBottom: 8 }}>Editar datos de la jornada</div>
-
-                            <label style={{ fontSize: 10, color: c.textMuted, display: "block", marginBottom: 3 }}>Nombre</label>
-                            <input
-                              value={editandoJornada.title}
-                              onChange={(e) => setEditandoJornada((f) => ({ ...f, title: e.target.value }))}
-                              style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: `1px solid ${c.border}`, background: c.surface, color: c.textPrimary, fontSize: 11, marginBottom: 8 }}
-                            />
-
-                            <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-                              <div style={{ flex: 1 }}>
-                                <label style={{ fontSize: 10, color: c.textMuted, display: "block", marginBottom: 3 }}>Fecha</label>
-                                <input
-                                  type="date"
-                                  value={editandoJornada.date}
-                                  onChange={(e) => setEditandoJornada((f) => ({ ...f, date: e.target.value }))}
-                                  style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: `1px solid ${c.border}`, background: c.surface, color: c.textPrimary, fontSize: 11, fontFamily: "'IBM Plex Sans', sans-serif", colorScheme: theme === "dark" ? "dark" : "light" }}
-                                />
-                              </div>
-                              <div style={{ flex: 1 }}>
-                                <label style={{ fontSize: 10, color: c.textMuted, display: "block", marginBottom: 3 }}>Hora de encuentro</label>
-                                <input
-                                  type="time"
-                                  value={editandoJornada.hora}
-                                  onChange={(e) => setEditandoJornada((f) => ({ ...f, hora: e.target.value }))}
-                                  style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: `1px solid ${c.border}`, background: c.surface, color: c.textPrimary, fontSize: 11, fontFamily: "'IBM Plex Sans', sans-serif", colorScheme: theme === "dark" ? "dark" : "light" }}
-                                />
-                              </div>
-                            </div>
-
-                            <label style={{ fontSize: 10, color: c.textMuted, display: "block", marginBottom: 3 }}>Punto de encuentro</label>
-                            <input
-                              placeholder="Ej: entrada del sendero, parqueadero de Guasca"
-                              value={editandoJornada.lugar}
-                              onChange={(e) => setEditandoJornada((f) => ({ ...f, lugar: e.target.value }))}
-                              style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: `1px solid ${c.border}`, background: c.surface, color: c.textPrimary, fontSize: 11, marginBottom: 10 }}
-                            />
-
-                            <div style={{ display: "flex", gap: 8 }}>
-                              <button
-                                onClick={guardarEdicion}
-                                disabled={!editandoJornada.title.trim() || !editandoJornada.date}
-                                style={{ flex: 1, padding: "8px", borderRadius: 8, border: "none", background: !editandoJornada.title.trim() || !editandoJornada.date ? c.surface : c.lichen, color: !editandoJornada.title.trim() || !editandoJornada.date ? c.textMuted : c.bg, fontSize: 12, fontWeight: 600, cursor: !editandoJornada.title.trim() || !editandoJornada.date ? "not-allowed" : "pointer" }}
-                              >
-                                Guardar cambios
-                              </button>
-                              <button onClick={() => setEditandoJornada(null)} style={{ flex: 1, padding: "8px", borderRadius: 8, border: `1px solid ${c.border}`, background: "none", color: c.textMuted, fontSize: 12, cursor: "pointer" }}>
-                                Cancelar
-                              </button>
-                            </div>
-                          </div>
-                        )}
-
                         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
                           <div style={{ display: "flex", alignItems: "center", gap: 6, color: c.textMuted, fontSize: 11 }}>
                             <Users size={13} />
@@ -1249,19 +904,9 @@ export default function ChingazaApp() {
                         </div>
 
                         {j.statusKey === "proxima" && (
-                          <>
-                            <div style={{ fontSize: 11, color: c.textMuted, background: c.surfaceAlt, borderRadius: 10, padding: 12, marginBottom: isAdmin ? 10 : 0 }}>
-                              Aún no inicia. Cuando comience, aquí se podrá registrar la recolección de bolsas por categoría y los kg totales.
-                            </div>
-                            {isAdmin && (
-                              <button
-                                onClick={() => iniciarJornada(j.id)}
-                                style={{ width: "100%", padding: "10px", borderRadius: 10, border: "none", background: c.lichen, color: c.bg, fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, fontSize: 13, cursor: "pointer" }}
-                              >
-                                Iniciar jornada
-                              </button>
-                            )}
-                          </>
+                          <div style={{ fontSize: 11, color: c.textMuted, background: c.surfaceAlt, borderRadius: 10, padding: 12 }}>
+                            Aún no inicia. Cuando comience, aquí se podrá registrar la recolección de bolsas por categoría y los kg totales.
+                          </div>
                         )}
 
                         {j.statusKey !== "proxima" && (
@@ -1271,16 +916,28 @@ export default function ChingazaApp() {
                             </div>
                             <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
                               {j.desglose.map((d) => (
-                                <div key={d.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: c.surfaceAlt, borderRadius: 10, padding: "8px 10px" }}>
-                                  <span style={{ fontSize: 12, color: c.textPrimary }}>{d.label}</span>
+                                <div key={d.id} style={{ background: c.surfaceAlt, borderRadius: 10, padding: "8px 10px" }}>
+                                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                                    <span style={{ fontSize: 12, color: c.textPrimary }}>{d.label}</span>
+                                    {canEdit ? (
+                                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                                        <button onClick={() => updateBolsas(j.id, d.id, -1)} style={{ width: 24, height: 24, borderRadius: 12, border: `1px solid ${c.border}`, background: c.surface, color: c.textPrimary, cursor: "pointer" }}>–</button>
+                                        <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, color: c.textPrimary, minWidth: 14, textAlign: "center" }}>{d.bolsas}</span>
+                                        <button onClick={() => updateBolsas(j.id, d.id, 1)} style={{ width: 24, height: 24, borderRadius: 12, border: `1px solid ${c.border}`, background: c.surface, color: c.textPrimary, cursor: "pointer" }}>+</button>
+                                      </div>
+                                    ) : (
+                                      <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, color: c[d.key] }}>{d.bolsas} bolsas</span>
+                                    )}
+                                  </div>
                                   {canEdit ? (
-                                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                                      <button onClick={() => updateBolsas(j.id, d.id, -1)} style={{ width: 24, height: 24, borderRadius: 12, border: `1px solid ${c.border}`, background: c.surface, color: c.textPrimary, cursor: "pointer" }}>–</button>
-                                      <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, color: c.textPrimary, minWidth: 14, textAlign: "center" }}>{d.bolsas}</span>
-                                      <button onClick={() => updateBolsas(j.id, d.id, 1)} style={{ width: 24, height: 24, borderRadius: 12, border: `1px solid ${c.border}`, background: c.surface, color: c.textPrimary, cursor: "pointer" }}>+</button>
-                                    </div>
+                                    <input
+                                      placeholder="¿A dónde va este residuo? (ej. recicladores del barrio, CAR)"
+                                      value={d.destino || ""}
+                                      onChange={(e) => updateDestino(j.id, d.id, e.target.value)}
+                                      style={{ width: "100%", boxSizing: "border-box", marginTop: 6, padding: "6px 8px", borderRadius: 8, border: `1px solid ${c.border}`, background: c.surface, color: c.textPrimary, fontSize: 10 }}
+                                    />
                                   ) : (
-                                    <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, color: c[d.key] }}>{d.bolsas} bolsas</span>
+                                    d.destino && <div style={{ fontSize: 10, color: c.textMuted, marginTop: 4 }}>Destino: {d.destino}</div>
                                   )}
                                 </div>
                               ))}
@@ -1288,22 +945,19 @@ export default function ChingazaApp() {
 
                             <div style={{ fontSize: 11, color: c.textMuted, fontWeight: 600, marginBottom: 6 }}>Kg totales pesados</div>
                             {canEdit ? (
-                              <>
-                                <input
-                                  type="number"
-                                  min="0"
-                                  step="0.5"
-                                  value={j.kgTotal}
-                                  onChange={(e) => updateKg(j.id, e.target.value)}
-                                  style={{ width: "100%", boxSizing: "border-box", padding: "9px 12px", borderRadius: 10, border: `1px solid ${c.border}`, background: c.surface, color: c.textPrimary, fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, marginBottom: 6 }}
-                                />
-                                <div style={{ fontSize: 10, color: c.textMuted, marginBottom: 14 }}>Escribe 0 si la jornada todavía no se ha pesado.</div>
-                              </>
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.5"
+                                value={j.kgTotal}
+                                onChange={(e) => updateKg(j.id, e.target.value)}
+                                style={{ width: "100%", boxSizing: "border-box", padding: "9px 12px", borderRadius: 10, border: `1px solid ${c.border}`, background: c.surface, color: c.textPrimary, fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, marginBottom: 14 }}
+                              />
                             ) : (
                               <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 15, color: c.lichen, marginBottom: 14 }}>{j.kgTotal} kg</div>
                             )}
 
-                            {canEdit && j.statusKey === "en_proceso" && (
+                            {canEdit && (
                               <button
                                 onClick={() => finalizarJornada(j.id)}
                                 disabled={totalBolsas === 0}
@@ -1341,41 +995,35 @@ export default function ChingazaApp() {
             <div>
               <div style={{ background: c.surface, borderRadius: 14, padding: 14, border: `1px solid ${c.border}`, marginBottom: 16 }}>
                 <div style={{ fontSize: 11, color: c.textMuted, fontWeight: 600, marginBottom: 8 }}>Dejar un testimonio</div>
-                {jornadasActivas.length === 0 ? (
-                  <div style={{ fontSize: 11, color: c.textMuted }}>Todavía no hay jornadas iniciadas para comentar.</div>
-                ) : (
-                  <>
-                    <select
-                      value={testInput.jornadaId ?? ""}
-                      onChange={(e) => setTestInput((f) => ({ ...f, jornadaId: Number(e.target.value) }))}
-                      style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: `1px solid ${c.border}`, background: c.surfaceAlt, color: c.textPrimary, fontSize: 11, marginBottom: 8 }}
-                    >
-                      {jornadasActivas.map((j) => (
-                        <option key={j.id} value={j.id}>{j.title}</option>
-                      ))}
-                    </select>
-                    <input
-                      placeholder="Tu nombre (opcional)"
-                      value={testInput.nombre}
-                      onChange={(e) => setTestInput((f) => ({ ...f, nombre: e.target.value }))}
-                      style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: `1px solid ${c.border}`, background: c.surfaceAlt, color: c.textPrimary, fontSize: 11, marginBottom: 8 }}
-                    />
-                    <textarea
-                      placeholder="¿Cómo te pareció la jornada o la iniciativa?"
-                      value={testInput.texto}
-                      onChange={(e) => setTestInput((f) => ({ ...f, texto: e.target.value }))}
-                      rows={3}
-                      style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: `1px solid ${c.border}`, background: c.surfaceAlt, color: c.textPrimary, fontSize: 11, marginBottom: 10, resize: "none", fontFamily: "'IBM Plex Sans', sans-serif" }}
-                    />
-                    <button
-                      onClick={addTestimonio}
-                      disabled={!testInput.texto.trim()}
-                      style={{ width: "100%", padding: "10px", borderRadius: 8, border: "none", background: !testInput.texto.trim() ? c.surfaceAlt : c.lichen, color: !testInput.texto.trim() ? c.textMuted : c.bg, fontSize: 12, fontWeight: 600, cursor: !testInput.texto.trim() ? "not-allowed" : "pointer" }}
-                    >
-                      Publicar testimonio
-                    </button>
-                  </>
-                )}
+                <select
+                  value={testInput.jornadaId}
+                  onChange={(e) => setTestInput((f) => ({ ...f, jornadaId: Number(e.target.value) }))}
+                  style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: `1px solid ${c.border}`, background: c.surfaceAlt, color: c.textPrimary, fontSize: 11, marginBottom: 8 }}
+                >
+                  {jornadasActivas.map((j) => (
+                    <option key={j.id} value={j.id}>{j.title}</option>
+                  ))}
+                </select>
+                <input
+                  placeholder="Tu nombre (opcional)"
+                  value={testInput.nombre}
+                  onChange={(e) => setTestInput((f) => ({ ...f, nombre: e.target.value }))}
+                  style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: `1px solid ${c.border}`, background: c.surfaceAlt, color: c.textPrimary, fontSize: 11, marginBottom: 8 }}
+                />
+                <textarea
+                  placeholder="¿Cómo te pareció la jornada o la iniciativa?"
+                  value={testInput.texto}
+                  onChange={(e) => setTestInput((f) => ({ ...f, texto: e.target.value }))}
+                  rows={3}
+                  style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: `1px solid ${c.border}`, background: c.surfaceAlt, color: c.textPrimary, fontSize: 11, marginBottom: 10, resize: "none", fontFamily: "'IBM Plex Sans', sans-serif" }}
+                />
+                <button
+                  onClick={addTestimonio}
+                  disabled={!testInput.texto.trim()}
+                  style={{ width: "100%", padding: "10px", borderRadius: 8, border: "none", background: !testInput.texto.trim() ? c.surfaceAlt : c.lichen, color: !testInput.texto.trim() ? c.textMuted : c.bg, fontSize: 12, fontWeight: 600, cursor: !testInput.texto.trim() ? "not-allowed" : "pointer" }}
+                >
+                  Publicar testimonio
+                </button>
               </div>
 
               <div style={{ fontSize: 12, color: c.textMuted, marginBottom: 8, fontWeight: 600 }}>{todosTestimonios.length} testimonios</div>
